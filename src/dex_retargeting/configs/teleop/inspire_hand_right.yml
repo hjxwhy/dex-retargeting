@@ -1,17 +1,21 @@
 retargeting:
   type: vector
   urdf_path: inspire_hand/inspire_hand_right.urdf
+  add_dummy_free_joint: True
 
-  # Target refers to the retargeting target, which is the robot hand
-  target_joint_names: [ 'pinky_proximal_joint', 'ring_proximal_joint', 'middle_proximal_joint', 'index_proximal_joint',
-                        'thumb_proximal_pitch_joint', 'thumb_proximal_yaw_joint' ]
-  target_origin_link_names: [ "base", "base", "base", "base", "base" ]
-  target_task_link_names: [ "thumb_tip",  "index_tip", "middle_tip", "ring_tip", "pinky_tip" ]
-  scaling_factor: 1.15
+  # 3 wrist rotation DOF (dummy) + 6 finger DOF = 9 total optimized joints
+  # Rotation dummies listed first so their Jacobians enter the optimization
+  target_joint_names: [ 'dummy_x_rotation_joint', 'dummy_y_rotation_joint', 'dummy_z_rotation_joint',
+                        'pinky_proximal_joint', 'ring_proximal_joint', 'middle_proximal_joint',
+                        'index_proximal_joint', 'thumb_proximal_pitch_joint', 'thumb_proximal_yaw_joint' ]
+  target_origin_link_names: [ "base1", "base1", "base1", "base1", "base1", "base1", "base1" ]
+  target_task_link_names: [ "thumb_tip", "index_tip", "middle_tip", "ring_tip", "pinky_tip", "thumb_proximal_base", "thumb_proximal" ]
+  scaling_factor: 1.35
 
   # Source refers to the retargeting input, which usually corresponds to the human hand
   # The joint indices of human hand joint which corresponds to each link in the target_link_names
-  target_link_human_indices: [ [ 0, 0, 0, 0, 0 ], [ 4, 8, 12, 16, 20 ] ]
+  target_link_human_indices: [ [ 0, 0, 0, 0, 0, 0, 0 ],
+                                [ 4, 8, 12, 16, 20, 1, 2 ] ]
 
   # A smaller alpha means stronger filtering, i.e. more smooth but also larger latency
   low_pass_alpha: 0.2

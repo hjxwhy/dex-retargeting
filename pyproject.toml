@@ -9,7 +9,7 @@ description = "Hand pose retargeting for dexterous robot hand."
 authors = [{ name = "Yuzhe Qin", email = "y1qin@ucsd.edu" }]
 license = { text = "MIT" }
 readme = "README.md"
-requires-python = ">=3.7,<3.13"
+requires-python = ">=3.9,<3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -33,6 +33,7 @@ dependencies = [
     "anytree>=2.12.0",
     "pyyaml>=6.0.0",
     "lxml>=5.2.2",
+    "h5py>=3.14.0",
 ]
 
 [project.optional-dependencies]
