@@ -16,3 +16,5 @@ imgui.ini
 /log
 /temp/
 *.egg-info
+*.rrd
+lerobot3_*/
