@@ -1,0 +1,85 @@
+left:
+  type: vector
+  urdf_path: brainco_hand/brainco_left.urdf
+
+  target_joint_names:
+    [
+      "left_thumb_metacarpal_joint",
+      "left_thumb_proximal_joint",
+      "left_index_proximal_joint",
+      "left_middle_proximal_joint",
+      "left_ring_proximal_joint",
+      "left_pinky_proximal_joint",
+    ]
+
+  target_origin_link_names:
+    [
+      "base_link",
+      "base_link",
+      "base_link",
+      "base_link",
+      "base_link",
+    ]
+  target_task_link_names:
+    [
+      "left_thumb_tip",
+      "left_index_tip",
+      "left_middle_tip",
+      "left_ring_tip",
+      "left_pinky_tip",
+    ]
+  target_link_human_indices:
+    [
+      [0, 0, 0, 0, 0],
+      [4, 9, 14, 19, 24],
+    ]
+
+  scaling_factor: 1.0
+  low_pass_alpha: 0.2
+  normal_delta: 0.004
+  huber_delta: 0.02
+  has_joint_limits: true
+  ignore_mimic_joint: false
+
+right:
+  type: vector
+  urdf_path: brainco_hand/brainco_right.urdf
+
+  target_joint_names:
+    [
+      "right_thumb_metacarpal_joint",
+      "right_thumb_proximal_joint",
+      "right_index_proximal_joint",
+      "right_middle_proximal_joint",
+      "right_ring_proximal_joint",
+      "right_pinky_proximal_joint",
+    ]
+
+  target_origin_link_names:
+    [
+      "base_link",
+      "base_link",
+      "base_link",
+      "base_link",
+      "base_link",
+    ]
+  target_task_link_names:
+    [
+      "right_thumb_tip",
+      "right_index_tip",
+      "right_middle_tip",
+      "right_ring_tip",
+      "right_pinky_tip",
+    ]
+  target_link_human_indices:
+    [
+      [0, 0, 0, 0, 0],
+      [4, 9, 14, 19, 24],
+    ]
+
+  scaling_factor: 1.0
+  low_pass_alpha: 0.2
+  normal_delta: 0.004
+  huber_delta: 0.02
+  has_joint_limits: true
+  ignore_mimic_joint: false
