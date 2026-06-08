@@ -22,96 +22,24 @@ import h5py
 import numpy as np
 import viser
 
-THIS_DIR = Path(__file__).resolve().parent
-if str(THIS_DIR) not in sys.path:
-    sys.path.insert(0, str(THIS_DIR))
-
 from egodex_wuji_common import (
-    MEDIAPIPE_CONNECTIONS,
+    SKELETON_EDGES,
+    collect_joint_positions,
     egodex_frame_to_mediapipe21,
+    extract_position,
+    extract_rotation_matrix,
+    get_confidence_group,
+    get_transform_group,
     hand_confidence_ok,
+    infer_num_frames,
+    make_line_segments,
+    make_mediapipe_line_segments,
+    normalize_scene_scale,
+    offset_joint_positions,
+    print_hdf5_tree,
     robot_fk_mediapipe21,
 )
 
-
-# -----------------------------
-# Skeleton definition
-# -----------------------------
-
-BODY_EDGES = [
-    ("hip", "spine1"),
-    ("spine1", "spine2"),
-    ("spine2", "spine3"),
-    ("spine3", "spine4"),
-    ("spine4", "spine5"),
-    ("spine5", "spine6"),
-    ("spine6", "spine7"),
-    ("spine7", "neck1"),
-    ("neck1", "neck2"),
-    ("neck2", "neck3"),
-    ("neck3", "neck4"),
-
-    ("spine7", "leftShoulder"),
-    ("leftShoulder", "leftArm"),
-    ("leftArm", "leftForearm"),
-    ("leftForearm", "leftHand"),
-
-    ("spine7", "rightShoulder"),
-    ("rightShoulder", "rightArm"),
-    ("rightArm", "rightForearm"),
-    ("rightForearm", "rightHand"),
-]
-
-
-def hand_edges(side: str):
-    """
-    side: "left" or "right"
-    """
-    prefix = side
-
-    return [
-        # thumb
-        (f"{prefix}Hand", f"{prefix}ThumbKnuckle"),
-        (f"{prefix}ThumbKnuckle", f"{prefix}ThumbIntermediateBase"),
-        (f"{prefix}ThumbIntermediateBase", f"{prefix}ThumbIntermediateTip"),
-        (f"{prefix}ThumbIntermediateTip", f"{prefix}ThumbTip"),
-
-        # index
-        (f"{prefix}Hand", f"{prefix}IndexFingerMetacarpal"),
-        (f"{prefix}IndexFingerMetacarpal", f"{prefix}IndexFingerKnuckle"),
-        (f"{prefix}IndexFingerKnuckle", f"{prefix}IndexFingerIntermediateBase"),
-        (f"{prefix}IndexFingerIntermediateBase", f"{prefix}IndexFingerIntermediateTip"),
-        (f"{prefix}IndexFingerIntermediateTip", f"{prefix}IndexFingerTip"),
-
-        # middle
-        (f"{prefix}Hand", f"{prefix}MiddleFingerMetacarpal"),
-        (f"{prefix}MiddleFingerMetacarpal", f"{prefix}MiddleFingerKnuckle"),
-        (f"{prefix}MiddleFingerKnuckle", f"{prefix}MiddleFingerIntermediateBase"),
-        (f"{prefix}MiddleFingerIntermediateBase", f"{prefix}MiddleFingerIntermediateTip"),
-        (f"{prefix}MiddleFingerIntermediateTip", f"{prefix}MiddleFingerTip"),
-
-        # ring
-        (f"{prefix}Hand", f"{prefix}RingFingerMetacarpal"),
-        (f"{prefix}RingFingerMetacarpal", f"{prefix}RingFingerKnuckle"),
-        (f"{prefix}RingFingerKnuckle", f"{prefix}RingFingerIntermediateBase"),
-        (f"{prefix}RingFingerIntermediateBase", f"{prefix}RingFingerIntermediateTip"),
-        (f"{prefix}RingFingerIntermediateTip", f"{prefix}RingFingerTip"),
-
-        # little
-        (f"{prefix}Hand", f"{prefix}LittleFingerMetacarpal"),
-        (f"{prefix}LittleFingerMetacarpal", f"{prefix}LittleFingerKnuckle"),
-        (f"{prefix}LittleFingerKnuckle", f"{prefix}LittleFingerIntermediateBase"),
-        (f"{prefix}LittleFingerIntermediateBase", f"{prefix}LittleFingerIntermediateTip"),
-        (f"{prefix}LittleFingerIntermediateTip", f"{prefix}LittleFingerTip"),
-
-        # palm cross links, useful for seeing palm plane
-        (f"{prefix}IndexFingerMetacarpal", f"{prefix}MiddleFingerMetacarpal"),
-        (f"{prefix}MiddleFingerMetacarpal", f"{prefix}RingFingerMetacarpal"),
-        (f"{prefix}RingFingerMetacarpal", f"{prefix}LittleFingerMetacarpal"),
-    ]
-
-
-SKELETON_EDGES = BODY_EDGES + hand_edges("left") + hand_edges("right")
 
 WUJIHAND_COLORS = {
     "left": np.array([255, 110, 180], dtype=np.uint8),
@@ -189,147 +117,6 @@ EGODEX_FROM_WUJI_WRIST = {
         dtype=np.float32,
     ),
 }
-
-
-# -----------------------------
-# HDF5 utilities
-# -----------------------------
-
-def print_hdf5_tree(h5_obj, prefix=""):
-    for key in h5_obj.keys():
-        item = h5_obj[key]
-        if isinstance(item, h5py.Dataset):
-            print(f"{prefix}{key}: shape={item.shape}, dtype={item.dtype}")
-        elif isinstance(item, h5py.Group):
-            print(f"{prefix}{key}/")
-            print_hdf5_tree(item, prefix + "  ")
-
-
-def get_transform_group(h5_file):
-    if "transforms" in h5_file:
-        return h5_file["transforms"]
-    raise KeyError("Cannot find group 'transforms' in this HDF5 file.")
-
-
-def get_confidence_group(h5_file):
-    if "confidences" in h5_file:
-        return h5_file["confidences"]
-    return None
-
-
-def infer_num_frames(transform_group):
-    for name in transform_group.keys():
-        arr = transform_group[name]
-        if isinstance(arr, h5py.Dataset) and len(arr.shape) >= 1:
-            return arr.shape[0]
-    raise RuntimeError("Cannot infer frame number from transforms group.")
-
-
-def extract_position(transform_data, frame_idx):
-    """
-    Supports:
-        [T, 4, 4]
-        [T, 3]
-        [T, 7] : x y z qx qy qz qw
-        [T, 8+] : use first 3 as position
-    """
-    x = np.asarray(transform_data[frame_idx])
-
-    if x.shape == (4, 4):
-        return x[:3, 3].astype(np.float32)
-
-    if x.ndim == 1:
-        if x.shape[0] >= 3:
-            return x[:3].astype(np.float32)
-
-    raise ValueError(f"Unsupported transform shape: {x.shape}")
-
-
-def extract_rotation_matrix(transform_data, frame_idx):
-    """
-    Only directly supports 4x4 matrix.
-    If your HDF5 uses quaternion, this function returns None.
-    """
-    x = np.asarray(transform_data[frame_idx])
-    if x.shape == (4, 4):
-        return x[:3, :3].astype(np.float32)
-    return None
-
-
-def get_confidence(conf_group, joint_name, frame_idx):
-    if conf_group is None:
-        return 1.0
-
-    if joint_name not in conf_group:
-        return 1.0
-
-    c = np.asarray(conf_group[joint_name][frame_idx])
-
-    if c.ndim == 0:
-        return float(c)
-
-    if c.size >= 1:
-        return float(c.reshape(-1)[0])
-
-    return 1.0
-
-
-def collect_joint_positions(transform_group, conf_group, frame_idx, min_conf=0.0):
-    joint_positions = {}
-    joint_confidences = {}
-
-    for joint_name in transform_group.keys():
-        try:
-            conf = get_confidence(conf_group, joint_name, frame_idx)
-            if conf < min_conf:
-                continue
-
-            pos = extract_position(transform_group[joint_name], frame_idx)
-            joint_positions[joint_name] = pos
-            joint_confidences[joint_name] = conf
-        except Exception:
-            continue
-
-    return joint_positions, joint_confidences
-
-
-def make_line_segments(joint_positions, edges):
-    segments = []
-
-    for a, b in edges:
-        if a in joint_positions and b in joint_positions:
-            segments.append([joint_positions[a], joint_positions[b]])
-
-    if len(segments) == 0:
-        return None
-
-    return np.asarray(segments, dtype=np.float32)
-
-
-def make_mediapipe_line_segments(points):
-    segments = []
-    for a, b in MEDIAPIPE_CONNECTIONS:
-        segments.append([points[a], points[b]])
-    return np.asarray(segments, dtype=np.float32)
-
-
-def offset_joint_positions(joint_positions, offset):
-    return {name: pos + offset for name, pos in joint_positions.items()}
-
-
-def normalize_scene_scale(joint_positions):
-    """
-    Optional helper. It estimates a rough scale for point radius.
-    """
-    if len(joint_positions) == 0:
-        return 0.01
-
-    pts = np.asarray(list(joint_positions.values()))
-    extent = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
-    if extent < 1e-6:
-        return 0.01
-
-    return float(extent * 0.01)
 
 
 def import_retargeter(wuji_root):

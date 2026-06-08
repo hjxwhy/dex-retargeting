@@ -20,18 +20,9 @@ for path in (THIS_DIR, REPO_ROOT / "egodex_wuji_tools"):
 from egodex_brainco_common import (  # noqa: E402
     BRAINCO_HARDWARE_JOINT_ORDER,
     BraincoRetargeter,
-    egodex_vp25_to_brainco_local,
+    retarget_egodex_brainco_frame,
 )
-from egodex_wuji_common import (  # noqa: E402
-    egodex_vp25_positions,
-    hand_confidence_ok,
-    require_h5py,
-)
-from viser_hdf5_skeleton_viewer import (  # noqa: E402
-    extract_position,
-    extract_rotation_matrix,
-    get_transform_group,
-)
+from egodex_wuji_common import get_transform_group, require_h5py  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,28 +82,19 @@ def main() -> None:
 
         for out_idx, frame_idx in enumerate(frame_indices):
             for side in sides:
-                ok = hand_confidence_ok(h5_file, int(frame_idx), side, args.min_conf)
-                if ok:
-                    hand_name = f"{side}Hand"
-                    vp25 = egodex_vp25_positions(h5_file, int(frame_idx), side)
-                    wrist_pos = extract_position(transform_group[hand_name], int(frame_idx))
-                    wrist_rot = extract_rotation_matrix(transform_group[hand_name], int(frame_idx))
-                    if wrist_pos is None or wrist_rot is None:
-                        continue
-                    vp25, _brainco_rot = egodex_vp25_to_brainco_local(
-                        vp25,
-                        wrist_pos,
-                        wrist_rot,
-                        side,
-                        args.wrist_axis_preset,
-                    )
-                    result = retargeter.retarget(
-                        side,
-                        vp25,
-                        apply_filter=not args.no_filter,
-                    )
-                    last_qpos[side] = result.qpos_hardware
-                    last_action[side] = result.action_01
+                frame = retarget_egodex_brainco_frame(
+                    h5_file,
+                    transform_group,
+                    int(frame_idx),
+                    side,
+                    retargeter,
+                    min_conf=args.min_conf,
+                    axis_preset=args.wrist_axis_preset,
+                    apply_filter=not args.no_filter,
+                )
+                if frame is not None:
+                    last_qpos[side] = frame.result.qpos_hardware
+                    last_action[side] = frame.result.action_01
                     valid[side][out_idx] = True
 
                 qpos[side][out_idx] = last_qpos[side]

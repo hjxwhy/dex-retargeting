@@ -239,6 +239,17 @@ class BraincoRetargetResult:
     action_01: np.ndarray
 
 
+@dataclass
+class BraincoFrameRetarget:
+    side: HandSide
+    wrist_position: np.ndarray
+    wrist_rotation: np.ndarray
+    brainco_base_rotation: np.ndarray
+    vp25_world: np.ndarray
+    vp25_local: np.ndarray
+    result: BraincoRetargetResult
+
+
 def ensure_import_paths() -> None:
     """Make local dex-retargeting imports available."""
     for path in (DEX_RETARGETING_SRC,):
@@ -333,6 +344,62 @@ def normalize_brainco_qpos(qpos_hardware: np.ndarray) -> np.ndarray:
     return np.clip(qpos_hardware / BRAINCO_MAX_QPOS, 0.0, 1.0).astype(np.float32)
 
 
+def brainco_fig6d_to_qpos(fig6d: list[float] | np.ndarray, hand_action: str) -> np.ndarray:
+    """Convert exported BrainCo fig6d data to hardware joint radians."""
+    qpos = np.asarray(fig6d, dtype=np.float32)
+    if qpos.shape != (BRAINCO_NUM_MOTORS,):
+        raise ValueError(f"Expected fig6d shape (6,), got {qpos.shape}")
+    if hand_action == "normalized":
+        qpos = np.clip(qpos, 0.0, 1.0) * BRAINCO_MAX_QPOS
+    elif hand_action != "radians":
+        raise ValueError(f"Unknown BrainCo hand action format: {hand_action}")
+    return qpos.astype(np.float32)
+
+
+def rotation_matrix_to_rpy_xyz(rotation: np.ndarray) -> np.ndarray:
+    """Return XYZ roll/pitch/yaw from a rotation matrix."""
+    r = np.asarray(rotation, dtype=np.float64)
+    sy = np.sqrt(r[0, 0] * r[0, 0] + r[1, 0] * r[1, 0])
+    singular = sy < 1e-8
+    if not singular:
+        roll = np.arctan2(r[2, 1], r[2, 2])
+        pitch = np.arctan2(-r[2, 0], sy)
+        yaw = np.arctan2(r[1, 0], r[0, 0])
+    else:
+        roll = np.arctan2(-r[1, 2], r[1, 1])
+        pitch = np.arctan2(-r[2, 0], sy)
+        yaw = 0.0
+    return np.array([roll, pitch, yaw], dtype=np.float32)
+
+
+def rpy_xyz_to_matrix(xyzrpy: list[float] | np.ndarray) -> np.ndarray:
+    """Convert an xyzrpy pose or rpy triplet to a rotation matrix."""
+    values = np.asarray(xyzrpy, dtype=np.float32)
+    if values.shape == (6,):
+        roll, pitch, yaw = values[3:6]
+    elif values.shape == (3,):
+        roll, pitch, yaw = values
+    else:
+        raise ValueError(f"Expected rpy shape (3,) or xyzrpy shape (6,), got {values.shape}")
+    return (_rot_z(float(yaw)) @ _rot_y(float(pitch)) @ _rot_x(float(roll))).astype(np.float32)
+
+
+def pose_xyzrpy(position: np.ndarray, rotation: np.ndarray) -> np.ndarray:
+    return np.concatenate(
+        [
+            np.asarray(position, dtype=np.float32),
+            rotation_matrix_to_rpy_xyz(rotation),
+        ]
+    ).astype(np.float32)
+
+
+def pose_from_xyzrpy(xyzrpy: list[float] | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    pose = np.asarray(xyzrpy, dtype=np.float32)
+    if pose.shape != (6,):
+        raise ValueError(f"Expected xyzrpy pose shape (6,), got {pose.shape}")
+    return pose[:3].copy(), rpy_xyz_to_matrix(pose)
+
+
 def egodex_to_brainco_wrist_rotation(
     egodex_wrist_rotation: np.ndarray,
     side: HandSide,
@@ -371,6 +438,56 @@ def egodex_vp25_to_brainco_local(
     )
     vp25_local = (vp25_positions - wrist_position[None, :]) @ brainco_wrist_rotation
     return vp25_local.astype(np.float32), brainco_wrist_rotation.astype(np.float32)
+
+
+def retarget_egodex_brainco_frame(
+    h5_file,
+    transform_group,
+    frame_idx: int,
+    side: HandSide,
+    retargeter: BraincoRetargeter,
+    *,
+    min_conf: float = 0.0,
+    axis_preset: str = "egodex-to-brainco",
+    apply_filter: bool = True,
+) -> BraincoFrameRetarget | None:
+    """Retarget one EgoDex HDF5 hand frame into BrainCo local targets."""
+    from egodex_wuji_common import (
+        egodex_vp25_positions,
+        extract_position,
+        extract_rotation_matrix,
+        hand_confidence_ok,
+    )
+
+    hand_name = f"{side}Hand"
+    if hand_name not in transform_group:
+        return None
+    if not hand_confidence_ok(h5_file, frame_idx, side, min_conf):
+        return None
+
+    wrist_position = extract_position(transform_group[hand_name], frame_idx)
+    wrist_rotation = extract_rotation_matrix(transform_group[hand_name], frame_idx)
+    if wrist_position is None or wrist_rotation is None:
+        return None
+
+    vp25_world = egodex_vp25_positions(h5_file, frame_idx, side)
+    vp25_local, brainco_base_rotation = egodex_vp25_to_brainco_local(
+        vp25_world,
+        wrist_position,
+        wrist_rotation,
+        side,
+        axis_preset,
+    )
+    result = retargeter.retarget(side, vp25_local, apply_filter=apply_filter)
+    return BraincoFrameRetarget(
+        side=side,
+        wrist_position=np.asarray(wrist_position, dtype=np.float32),
+        wrist_rotation=np.asarray(wrist_rotation, dtype=np.float32),
+        brainco_base_rotation=brainco_base_rotation,
+        vp25_world=vp25_world,
+        vp25_local=vp25_local,
+        result=result,
+    )
 
 
 def brainco_base_to_wrist_pose(

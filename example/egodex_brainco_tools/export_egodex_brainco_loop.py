@@ -28,18 +28,17 @@ for path in (THIS_DIR, REPO_ROOT / "egodex_wuji_tools"):
         sys.path.insert(0, path_str)
 
 from egodex_brainco_common import (  # noqa: E402
-    BRAINCO_WRIST_OFFSET_LOCAL,
     BRAINCO_HARDWARE_JOINT_ORDER,
+    BRAINCO_WRIST_OFFSET_LOCAL,
     BraincoRetargeter,
     brainco_base_to_wrist_pose,
     brainco_hand_only_scene_position,
     brainco_hand_only_scene_rotation,
-    egodex_vp25_to_brainco_local,
+    pose_xyzrpy,
+    retarget_egodex_brainco_frame,
 )
-from egodex_wuji_common import egodex_vp25_positions, hand_confidence_ok, require_h5py  # noqa: E402
-from viser_hdf5_skeleton_viewer import (  # noqa: E402
-    extract_position,
-    extract_rotation_matrix,
+from egodex_wuji_common import require_h5py  # noqa: E402
+from egodex_wuji_common import (  # noqa: E402
     get_transform_group,
 )
 
@@ -92,31 +91,6 @@ def parse_args() -> argparse.Namespace:
         help="Manual additional Y offset applied after the hand-only scene transform.",
     )
     return parser.parse_args()
-
-
-def rotation_matrix_to_rpy_xyz(rotation: np.ndarray) -> np.ndarray:
-    """Return intrinsic XYZ roll/pitch/yaw from a rotation matrix."""
-    r = np.asarray(rotation, dtype=np.float64)
-    sy = np.sqrt(r[0, 0] * r[0, 0] + r[1, 0] * r[1, 0])
-    singular = sy < 1e-8
-    if not singular:
-        roll = np.arctan2(r[2, 1], r[2, 2])
-        pitch = np.arctan2(-r[2, 0], sy)
-        yaw = np.arctan2(r[1, 0], r[0, 0])
-    else:
-        roll = np.arctan2(-r[1, 2], r[1, 1])
-        pitch = np.arctan2(-r[2, 0], sy)
-        yaw = 0.0
-    return np.array([roll, pitch, yaw], dtype=np.float32)
-
-
-def pose_xyzrpy(position: np.ndarray, rotation: np.ndarray) -> np.ndarray:
-    return np.concatenate(
-        [
-            np.asarray(position, dtype=np.float32),
-            rotation_matrix_to_rpy_xyz(rotation),
-        ]
-    ).astype(np.float32)
 
 
 def compute_initial_wrist_y_offset(base_frames: list[dict]) -> float:
@@ -205,43 +179,34 @@ def main() -> None:
             fig_rad = {}
 
             for side in ("left", "right"):
-                hand_name = f"{side}Hand"
-                ok = hand_name in transform_group and hand_confidence_ok(
+                frame = retarget_egodex_brainco_frame(
                     h5_file,
+                    transform_group,
                     source_idx_int,
                     side,
-                    args.min_conf,
+                    retargeter,
+                    min_conf=args.min_conf,
+                    axis_preset=args.wrist_axis_preset,
+                    apply_filter=not args.no_filter,
                 )
-                if ok:
-                    vp25 = egodex_vp25_positions(h5_file, source_idx_int, side)
-                    wrist_pos = extract_position(transform_group[hand_name], source_idx_int)
-                    wrist_rot = extract_rotation_matrix(transform_group[hand_name], source_idx_int)
-                    if wrist_pos is not None and wrist_rot is not None:
-                        vp25_local, brainco_rot = egodex_vp25_to_brainco_local(
-                            vp25,
-                            wrist_pos,
-                            wrist_rot,
-                            side,
-                            args.wrist_axis_preset,
-                        )
-                        result = retargeter.retarget(
-                            side,
-                            vp25_local,
-                            apply_filter=not args.no_filter,
-                        )
-                        scene_base_pos = brainco_hand_only_scene_position(wrist_pos)
-                        scene_base_rot = brainco_hand_only_scene_rotation(brainco_rot)
-                        stored_wrist_pos, stored_wrist_rot = brainco_base_to_wrist_pose(
-                            scene_base_pos,
-                            scene_base_rot,
-                            side,
-                            args.wrist_y_offset,
-                        )
-                        last_base_pose[side] = pose_xyzrpy(scene_base_pos, scene_base_rot)
-                        last_pose[side] = pose_xyzrpy(stored_wrist_pos, stored_wrist_rot)
-                        last_fig_rad[side] = result.qpos_hardware
-                        last_fig[side] = result.action_01 if args.hand_action == "normalized" else result.qpos_hardware
-                        last_valid[side] = True
+                if frame is not None:
+                    scene_base_pos = brainco_hand_only_scene_position(frame.wrist_position)
+                    scene_base_rot = brainco_hand_only_scene_rotation(frame.brainco_base_rotation)
+                    stored_wrist_pos, stored_wrist_rot = brainco_base_to_wrist_pose(
+                        scene_base_pos,
+                        scene_base_rot,
+                        side,
+                        args.wrist_y_offset,
+                    )
+                    last_base_pose[side] = pose_xyzrpy(scene_base_pos, scene_base_rot)
+                    last_pose[side] = pose_xyzrpy(stored_wrist_pos, stored_wrist_rot)
+                    last_fig_rad[side] = frame.result.qpos_hardware
+                    last_fig[side] = (
+                        frame.result.action_01
+                        if args.hand_action == "normalized"
+                        else frame.result.qpos_hardware
+                    )
+                    last_valid[side] = True
 
                 pose[side] = last_pose[side].copy()
                 base_pose[side] = last_base_pose[side].copy()

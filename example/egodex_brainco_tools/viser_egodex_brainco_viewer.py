@@ -6,35 +6,25 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
 
 THIS_DIR = Path(__file__).resolve().parent
-REPO_ROOT = THIS_DIR.parents[0]
-for path in (THIS_DIR, REPO_ROOT / "egodex_wuji_tools"):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
 
 from egodex_brainco_common import (  # noqa: E402
-    BRAINCO_ASSET_DIR,
     BRAINCO_WRIST_OFFSET_LOCAL,
     BraincoRetargeter,
     brainco_base_to_wrist_pose,
     brainco_fk_points,
-    egodex_vp25_to_brainco_local,
     make_brainco_line_segments,
     make_vp25_line_segments,
     rotation_matrix_to_wxyz,
+    retarget_egodex_brainco_frame,
 )
-from egodex_wuji_common import egodex_vp25_positions, hand_confidence_ok, require_h5py  # noqa: E402
-from viser_hdf5_skeleton_viewer import (  # noqa: E402
+from egodex_wuji_common import (  # noqa: E402
     SKELETON_EDGES,
     collect_joint_positions,
-    extract_position,
-    extract_rotation_matrix,
     get_confidence_group,
     get_transform_group,
     infer_num_frames,
@@ -42,6 +32,14 @@ from viser_hdf5_skeleton_viewer import (  # noqa: E402
     normalize_scene_scale,
     offset_joint_positions,
     print_hdf5_tree,
+    require_h5py,
+)
+from viser_brainco_common import (  # noqa: E402
+    draw_points_and_lines,
+    load_brainco_urdfs,
+    remove_handles,
+    run_playback_loop,
+    set_urdf_visible,
 )
 
 
@@ -84,18 +82,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def remove_handles(handles: dict, keys) -> None:
-    for key in keys:
-        handle = handles.pop(key, None)
-        if handle is not None:
-            handle.remove()
-
-
-def set_urdf_visible(urdfs: dict, visible: bool) -> None:
-    for urdf in urdfs.values():
-        urdf.show_visual = bool(visible)
-
-
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True)
@@ -120,7 +106,7 @@ def main() -> None:
     num_frames = infer_num_frames(transform_group)
     retargeter = BraincoRetargeter(args.config)
 
-    egodex_offset = np.array([-0.55, 0.0, 0.0], dtype=np.float32)
+    egodex_offset = np.array([-0.55, 0.0, 0.0], dtype=np.float32) # for visualization only, does not affect retargeting results
     brainco_offset = np.array([0.55, 0.0, 0.0], dtype=np.float32)
 
     print(f"[INFO] Loaded: {args.hdf5}", flush=True)
@@ -164,39 +150,14 @@ def main() -> None:
 
     brainco_urdfs = {}
     if not args.no_brainco_mesh:
-        try:
-            from viser.extras import ViserUrdf
-
-            for side in ("left", "right"):
-                urdf_path = BRAINCO_ASSET_DIR / "brainco_hand" / f"brainco_{side}.urdf"
-                brainco_urdfs[side] = ViserUrdf(
-                    server,
-                    urdf_path,
-                    root_node_name=f"/world/brainco/{side}_mesh",
-                    mesh_color_override=(0.75, 0.78, 0.82, 0.45),
-                    load_meshes=True,
-                    load_collision_meshes=False,
-                )
-        except Exception as exc:
-            print(f"[WARN] Failed to load BrainCo URDF mesh; FK skeleton only: {exc}", flush=True)
-            brainco_urdfs = {}
+        brainco_urdfs = load_brainco_urdfs(
+            server,
+            root_node_name="/world/brainco/{side}_mesh",
+            mesh_color_override=(0.75, 0.78, 0.82, 0.45),
+            warning_suffix="FK skeleton only",
+        )
 
     handles = {}
-
-    def draw_points_and_lines(name: str, points: np.ndarray, color: np.ndarray, edges_fn, point_size=0.009):
-        remove_handles(handles, [f"{name}_points", f"{name}_lines"])
-        handles[f"{name}_points"] = server.scene.add_point_cloud(
-            f"{name}/points",
-            points=points.astype(np.float32),
-            colors=np.tile(color[None, :], (points.shape[0], 1)),
-            point_size=point_size,
-        )
-        handles[f"{name}_lines"] = server.scene.add_line_segments(
-            f"{name}/lines",
-            points=edges_fn(points),
-            colors=color,
-            line_width=2.5,
-        )
 
     def update_scene(frame_idx: int) -> None:
         joint_positions, _joint_confidences = collect_joint_positions(
@@ -231,45 +192,37 @@ def main() -> None:
 
         frame_keys = []
         for side in ("left", "right"):
-            hand_name = f"{side}Hand"
-            if hand_name not in transform_group:
+            frame = retarget_egodex_brainco_frame(
+                h5_file,
+                transform_group,
+                frame_idx,
+                side,
+                retargeter,
+                min_conf=float(gui_min_conf.value),
+                axis_preset=args.wrist_axis_preset,
+                apply_filter=not args.no_filter,
+            )
+            if frame is None:
                 continue
-            ok = hand_confidence_ok(h5_file, frame_idx, side, float(gui_min_conf.value))
-            if not ok:
-                continue
-
-            vp25 = egodex_vp25_positions(h5_file, frame_idx, side)
-            wrist_pos = extract_position(transform_group[hand_name], frame_idx)
-            wrist_rot = extract_rotation_matrix(transform_group[hand_name], frame_idx)
-            if wrist_rot is not None and wrist_pos is not None:
-                vp25_brainco_local, brainco_wrist_rot_for_retarget = egodex_vp25_to_brainco_local(
-                    vp25,
-                    wrist_pos,
-                    wrist_rot,
-                    side,
-                    args.wrist_axis_preset,
-                )
-            else:
-                vp25_brainco_local = vp25
-                brainco_wrist_rot_for_retarget = None
-            result = retargeter.retarget(side, vp25_brainco_local, apply_filter=not args.no_filter)
-            fk_local = brainco_fk_points(retargeter.retargeting[side], result.qpos_full, side)
+            fk_local = brainco_fk_points(retargeter.retargeting[side], frame.result.qpos_full, side)
 
             if gui_show_vp25.value:
                 draw_points_and_lines(
+                    server,
+                    handles,
                     f"/world/egodex/{side}_vp25",
-                    vp25 + egodex_offset,
+                    frame.vp25_world + egodex_offset,
                     COLORS[f"egodex_{side}"],
                     make_vp25_line_segments,
                 )
             else:
                 remove_handles(handles, [f"/world/egodex/{side}_vp25_points", f"/world/egodex/{side}_vp25_lines"])
 
-            if wrist_rot is not None and gui_world_pose.value:
-                brainco_wrist_rot = brainco_wrist_rot_for_retarget
+            if gui_world_pose.value:
+                brainco_wrist_rot = frame.brainco_base_rotation
                 fk_base = fk_local - fk_local[0:1]
-                fk_display = (fk_base @ brainco_wrist_rot.T) + wrist_pos + brainco_offset
-                mesh_pos = wrist_pos + brainco_offset
+                fk_display = (fk_base @ brainco_wrist_rot.T) + frame.wrist_position + brainco_offset
+                mesh_pos = frame.wrist_position + brainco_offset
                 mesh_wxyz = rotation_matrix_to_wxyz(brainco_wrist_rot)
                 frame_pos, frame_rot = brainco_base_to_wrist_pose(
                     mesh_pos,
@@ -287,6 +240,8 @@ def main() -> None:
 
             if gui_show_brainco.value:
                 draw_points_and_lines(
+                    server,
+                    handles,
                     f"/world/brainco/{side}_fk",
                     fk_display,
                     COLORS[f"brainco_{side}"],
@@ -298,7 +253,7 @@ def main() -> None:
 
             if side in brainco_urdfs:
                 urdf = brainco_urdfs[side]
-                urdf.update_cfg(result.qpos_hardware)
+                urdf.update_cfg(frame.result.qpos_hardware)
                 for root_handle_name in ("_visual_root_frame", "_collision_root_frame"):
                     root_handle = getattr(urdf, root_handle_name, None)
                     if root_handle is not None:
@@ -311,7 +266,7 @@ def main() -> None:
             old = handles.pop(frame_key, None)
             if old is not None:
                 old.remove()
-            if gui_show_frames.value and wrist_rot is not None:
+            if gui_show_frames.value:
                 handles[frame_key] = server.scene.add_frame(
                     f"/world/brainco/{side}_wrist_frame",
                     position=frame_pos,
@@ -343,23 +298,7 @@ def main() -> None:
         control.on_update(redraw)
 
     update_scene(int(gui_frame.value))
-    last_time = time.time()
-    while True:
-        if gui_play.value:
-            now = time.time()
-            target_dt = 1.0 / max(float(gui_fps.value), 1.0)
-            if now - last_time >= target_dt:
-                next_frame = int(gui_frame.value) + 1
-                if next_frame >= num_frames:
-                    next_frame = 0 if args.loop else num_frames - 1
-                    if not args.loop:
-                        gui_play.value = False
-                gui_frame.value = next_frame
-                update_scene(next_frame)
-                last_time = now
-        else:
-            last_time = time.time()
-        time.sleep(0.001)
+    run_playback_loop(gui_play, gui_frame, gui_fps, num_frames, args.loop, update_scene)
 
 
 if __name__ == "__main__":
