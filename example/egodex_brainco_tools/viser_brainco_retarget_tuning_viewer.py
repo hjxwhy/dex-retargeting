@@ -130,7 +130,11 @@ def main() -> None:
     try:
         import viser
     except ImportError as exc:
-        raise SystemExit("Missing dependency: viser. Install it in the egodex environment.") from exc
+        raise SystemExit(
+            "Missing dependency: viser. Install the example dependencies with "
+            "`uv sync --extra torch-cu124 --extra example` or "
+            "`uv sync --extra torch-cu128 --extra example`."
+        ) from exc
 
     h5py = require_h5py()
     h5_file = h5py.File(args.hdf5, "r")

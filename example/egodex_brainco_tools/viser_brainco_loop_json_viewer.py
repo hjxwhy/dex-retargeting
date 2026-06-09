@@ -60,7 +60,11 @@ def main() -> None:
     try:
         import viser
     except ImportError as exc:
-        raise SystemExit("Missing dependency: viser. Install it in the egodex environment.") from exc
+        raise SystemExit(
+            "Missing dependency: viser. Install the example dependencies with "
+            "`uv sync --extra torch-cu124 --extra example` or "
+            "`uv sync --extra torch-cu128 --extra example`."
+        ) from exc
 
     with args.json.open("r", encoding="utf-8") as f:
         data = json.load(f)

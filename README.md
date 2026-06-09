@@ -36,17 +36,55 @@
 
 ## Installation
 
+This project requires Python `>=3.10,<3.13` and uses `uv` for local dependency management.
+
+Install the published package from PyPI:
+
 ```shell
 pip install dex_retargeting
 ```
 
-To run the example, you may need additional dependencies for rendering and hand pose detection.
+For local development, clone the repository and create/sync the uv environment:
 
 ```shell
 git clone https://github.com/dexsuite/dex-retargeting
 cd dex-retargeting
-pip install -e ".[example]"
+uv sync
 ```
+
+The optimizer uses PyTorch. Select exactly one CUDA-specific extra for your machine:
+
+```shell
+# CUDA 12.4 compatible environment
+uv sync --extra torch-cu124
+
+# CUDA 12.8 compatible environment
+uv sync --extra torch-cu128
+```
+
+To run the examples, install the example extra together with the matching PyTorch extra. The example extra includes `viser[urdf]` for URDF visualization utilities.
+
+```shell
+# Example setup for CUDA 12.4
+uv sync --extra torch-cu124 --extra example
+
+# Example setup for CUDA 12.8
+uv sync --extra torch-cu128 --extra example
+```
+
+You can then run commands inside the environment with `uv run`:
+
+```shell
+uv run python <script.py>
+```
+
+If `uv` cannot write to the default cache directory, point it to a writable path, for example:
+
+```shell
+UV_CACHE_DIR=/tmp/uv-cache uv sync --extra torch-cu124 --extra example
+```
+
+Do not enable both `torch-cu124` and `torch-cu128` in the same environment.
 
 ## Changelog
 
